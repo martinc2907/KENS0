@@ -7,8 +7,17 @@
 #include <sys/types.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <stdbool.h>
+
 
 #include <arpa/inet.h>
+
+#define HEADER_SIZE 8
+
+
+/* Function declarations */
+unsigned adjust_to_multiple_of_16(unsigned packet_length);
+unsigned short calculate_checksum(char * packet, unsigned packet_length);
 
 
 void *get_in_addr(struct sockaddr *sa)
@@ -48,19 +57,15 @@ int main(int argc, char * argv[]){
 
 	//loop through results and connect to whichever that works- more robust?
 	for(p = server_info; p!= NULL; p = p->ai_next){
-
-
 		if( (sockfd = socket(p->ai_family, p->ai_socktype, p->ai_protocol)) == -1){
 			perror("client: socket");    //error msg corresponding to errno.
       continue;
 		}
-
     if( connect(sockfd, p->ai_addr, p->ai_addrlen) == -1){
       close(sockfd);
       perror("client: connect");
       continue;
     }
-
     //reach here upon success.
     break;
 	}
@@ -74,110 +79,148 @@ int main(int argc, char * argv[]){
   char s[INET6_ADDRSTRLEN];
   //  inet_ntop(p->ai_family, get_in_addr((struct sockaddr *)p->ai_addr), s, sizeof s);
   inet_ntop(p->ai_family, get_in_addr((struct sockaddr *)p->ai_addr), s, sizeof s);
-  printf("client: connecting to %s\n", s);
+  // printf("client: connecting to %s\n", s);
 
   freeaddrinfo(server_info);
 
-
   char * packet;
+  char * packet_from_server;
+
   unsigned char op_byte;
   unsigned char shift_byte;
   unsigned packet_length;   //length of entire packet.
   unsigned original_length; //length of data before 16bit adjusted.
   unsigned data_length;          //length of data after 16bit adjusted.
   unsigned length_network_order;  //network order
-  unsigned short checksum = 0; //this needs to be 2 bytes later.
+  unsigned short checksum; //this needs to be 2 bytes later.
+
+  bool read_more = true;
 
   int write_length;
   int read_length;
 
-  packet = calloc(1,10000000);  //10MB(10x10^6) including header.
   op_byte = (unsigned char) atoi(operation);
   shift_byte = (unsigned char) atoi(shift);
 
   //Read from stdin into data area of packet.
-  original_length = read(0, packet + 8, 10000000-4-4);
-  /*what about when length is longer than 10MB?*/
+  
+  //while loop for input longer than 10MB.
+  while(1){  
+    packet = calloc(1,10000000);  //10MB(10x10^6) including header.
+    if((original_length = read(0, packet+8, 10000000-HEADER_SIZE)) < 10000000-HEADER_SIZE){
+      read_more = false;
+    }
 
-  //Adjust length to multiple of 16.
-  data_length = original_length;
-  while((data_length+8)%16 != 0){
-    data_length++;
+    /* Take care of errors */
+    if( original_length == -1){
+      perror("Error upon reading from stdin:");
+    }
+
+    /* Adjust Length to multiple of 16 */
+    packet_length = adjust_to_multiple_of_16(original_length + HEADER_SIZE);
+    data_length = packet_length - HEADER_SIZE;
+    length_network_order = htonl(packet_length);
+
+    /* Pack data */
+    memcpy(packet, &op_byte, 1);
+    memcpy(packet+1, &shift_byte, 1);
+    memcpy(packet+4, &length_network_order, 4);
+
+    /* Calculate checksum and place in field. */
+    checksum = calculate_checksum(packet, packet_length);
+
+    /* Pack data- checksum */
+    memcpy(packet+2, &checksum, 2);
+
+
+    /* Debugging - print packet */
+    // for(i =0; i<packet_length; i++){
+    //   if(i%4 == 0){
+    //     printf("\n");
+    //   }
+    //   printf("%02X ", *((char *)(packet+i)));
+    // }
+    // printf("\n");
+
+    /* Write to server */
+    write_length = write(sockfd, packet, packet_length);
+
+    /* Receive from server */
+    packet_from_server = calloc(1, packet_length);  //+1 for null char.
+    read_length = 0;
+    int temp1;
+    while(read_length!=packet_length){
+      temp1 = read(sockfd, packet_from_server+read_length, packet_length);
+      if(temp1<0){
+        perror("read not working");
+      }
+      read_length+=temp1;
+    }
+
+
+    /* Debugging - print received packet */
+    // for(i =0; i<packet_length; i++){
+    //   if(i%4 == 0){
+    //     printf("\n");
+    //   }
+    //   printf("%02X ", *((char *)(packet_from_server+i)));
+    // }
+    // printf("\n");
+
+    /* May need to change this later. */  
+    int temp2 = write(1, packet_from_server+8, packet_length-8);
+    fflush(stdout);
+
+    free(packet_from_server);
+
+    /* Free and re calloc, to set to 0. */
+    free(packet);
+
+    if(!read_more){
+      break;
+    }
   }
-  packet_length = data_length+8;
+}
 
-  length_network_order = htonl(packet_length); 
+unsigned adjust_to_multiple_of_16(unsigned packet_length){
+  unsigned adjusted_length = packet_length;
+  while(adjusted_length%16 != 0){
+    adjusted_length++;
+  }
+  return adjusted_length;
+}
 
-  //Pack data.
-  memcpy(packet, &op_byte, 1);
-  memcpy(packet+1, &shift_byte, 1);
-  memcpy(packet+2, &checksum, 2);
-  memcpy(packet+4, &length_network_order, 4);
-
-  //Calculate checksum and place in field.
+unsigned short calculate_checksum(char * packet, unsigned packet_length){
+  unsigned short checksum = 0;
   unsigned long long sum = 0;
-  for(i =0; i < packet_length; i=i+2){
+
+  unsigned int carry;
+
+  unsigned int i;
+
+  /* Summation step */
+  for(i = 0; i < packet_length; i = i+2){
     sum += (packet[i]<<8) & 0xff00;
-    //sum += (packet[i+1]) & 0xff;
-    // printf("packet 1=%d\n", (packet[i]<<8) & 0xff00);
-    sum += (packet[i+1]) & 0xff;//imagine bytes as stream when thinking of ordering.
-    // printf("packet 1=%d\n", (packet[i+1]) & 0xff);
+    sum += (packet[i+1]) & 0xff;
   }
 
-  //Add the carries.
-  int carry;
+  /* Wrap-around: adding the carries */
   while(sum>>16){
-    //add carry to sum.
-    //long long is 8 bytes.
-    int carry = (int)(sum>>16);
+    carry = (unsigned int)(sum>>16);
     sum = (sum & 0x0000000000ffff);
     sum += carry;
   }
+
+  /* One's comp */
   sum = ~sum;
 
   checksum = (unsigned short)(0xffff & sum);
-  // printf("What's checksum = 0x%x\n", checksum);
-
   checksum = htons(checksum);
-  memcpy(packet+2, &checksum, 2);
-
-
-  //Debugging print statements
-  for(i =0; i<packet_length; i++){
-    if(i%4 == 0){
-      printf("\n");
-    }
-    printf("%02X ", *((char *)(packet+i)));
-  }
-  printf("\n");
-
-  //write to server.
-  write_length= write(sockfd, packet, packet_length);
-  free(packet);
-
-  printf("Finished writing to server\n");
-
-  //Receive from server.
-  char * data = calloc(1, packet_length);
-  read_length = read(sockfd, data, packet_length);
-  if(read_length < 0){
-    perror("read not working");
-  }
-
-  //Debugging print statements
-  for(i =0; i<packet_length; i++){
-    if(i%4 == 0){
-      printf("\n");
-    }
-    printf("%02X ", *((char *)(data+i)));
-  }
-  printf("\n");
-
-  
-  free(data);
-
-  // printf("Finished\n");
+  return checksum;
 }
+
+
+
 
 
 
