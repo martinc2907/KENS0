@@ -10,12 +10,22 @@
 #include <arpa/inet.h>
 #include <sys/wait.h>
 #include <signal.h>
+#include <stdbool.h>
+#include <ctype.h>
+
+
+
 
 #define BACKLOG 10     // how many pending connections queue will hold
 
-void cipher(int op, unsigned shift, unsigned length, char * data);
+void cipher(unsigned char op, unsigned char shift, unsigned length, char * data);
 void sigchld_handler(int s);
 void *get_in_addr(struct sockaddr *sa);
+bool valid_checksum(char * packet, unsigned packet_length);
+unsigned short calculate_checksum(char * packet, unsigned packet_length);
+unsigned char alphabet_shift_and_modulo(unsigned char c, unsigned char shift);
+int guaranteed_write(int sockfd, char * packet, unsigned packet_length);
+int guaranteed_read(int sockfd, char * packet, unsigned packet_length);
 
 int main(int argc, char * argv[]){
 
@@ -102,33 +112,74 @@ int main(int argc, char * argv[]){
             get_in_addr((struct sockaddr *)&client_addr),
             s, sizeof s);
         printf("server: got connection from %s\n", s);
+        
 
         if(!fork()){    //inside is child process.
             close(sockfd);  //doesn't need listener fd.
 
-            /* Read header from client first. */
-            //header is 8 bytes.
-            
+            int length;
+            bool read_more = true;
+            char * packet;
+            char header[8];
+            //new structure for code.
+            while(1){
 
+                /* Read header first */
+                int header_read = guaranteed_read(newfd, header, 8);
+                if(header_read != 8){
+                    //broken header
+                    close(newfd);
+                    exit(1);
+                }
 
+                /* Obtain length of packet. */
+                unsigned packet_length;
+                memcpy(&packet_length, header+4, 4);
+                packet_length = ntohl(packet_length);
 
-            //
-            read(newfd, &op, 1);
-            read(newfd, &shift, 1);
-            read(newfd, &checksum, 2);
-            read(newfd, &length, 4);
-            length = ntohl(length);
+                /* Read entire packet now. */
+                packet = calloc(1, packet_length);
+                memcpy(packet, header, 8);
+                if((length = guaranteed_read(newfd, packet+8, packet_length-8))<packet_length-8){
+                    //If payload broken.
+                    free(packet);
+                    close(newfd);
+                    exit(1);
+                }
+                if(length + 8 < 10000000){
+                    read_more = false;
+                }
 
-            void * data = malloc(length);
-            read(newfd, data, length);
+                /* Validate checksum */
+                if(!valid_checksum(packet, packet_length)){
+                    free(packet);
+                    close(newfd);
+                    exit(1);
+                }
 
-            printf("testing: op = %d, shift = %u, length = %u, data = %s\n", op, shift, length, data);
+                /* Get arguments */
+                unsigned char op;
+                unsigned char shift;
+                memcpy(&op, packet, 1);
+                memcpy(&shift, packet+1,1);
 
-            cipher(op, shift, length, (char *)data);
-            
-            //just send data itself back!
-            write(newfd, data, length);
+                /* Shift bytes */
+                cipher(op, shift, packet_length, packet);
 
+                /* Replace checksum */
+                int zero = 0;
+                memcpy(packet+2, &zero, 2); //zero checksum
+                unsigned short checksum = calculate_checksum(packet, packet_length);
+                memcpy(packet+2, &checksum, 2);
+
+                /* Send data back */
+                guaranteed_write(newfd, packet, packet_length);
+
+                free(packet);
+
+                if(!read_more)
+                    break;
+            }
             close(newfd);
             exit(0);
         }
@@ -138,18 +189,30 @@ int main(int argc, char * argv[]){
     return 0;
 }
 
+void cipher(unsigned char op, unsigned char shift, unsigned length, char * data){
 
-void cipher(int op, unsigned shift, unsigned length, char * data){
+    unsigned i;
+    unsigned char c;
 
-    char shift_char = (char) shift;  //ok since shift is not negative.
-
-    if(op == 1){//decryption
-        shift_char = shift_char * -1;
-    } 
-
-    for(int i = 0; i < length; i++){
-        *(data+i) = (*(data+i)) + shift_char;
+    if(op == 1){
+        shift = shift * -1; //decrypt
     }
+
+
+    for(i = 8; i < length; i++){
+        c = *(data+i);
+        if(isalpha(c)){
+            c = tolower(c);
+            c = alphabet_shift_and_modulo(c, shift);
+            *(data+i) = c;
+        }
+    }
+}
+
+
+unsigned char alphabet_shift_and_modulo(unsigned char c, unsigned char shift){
+    //97~122
+    return (unsigned char)(((c - 97u + shift)%26u)+97u);
 }
 
 
@@ -174,16 +237,84 @@ void *get_in_addr(struct sockaddr *sa)
     return &(((struct sockaddr_in6*)sa)->sin6_addr);
 }
 
+bool valid_checksum(char * packet, unsigned packet_length){
+  unsigned short checksum = ~calculate_checksum(packet, packet_length);
+  unsigned short validation = 0xffff;
+
+  if(checksum == validation){
+    return true;
+  }
+  return false;
+}
 
 
+unsigned short calculate_checksum(char * packet, unsigned packet_length){
+  unsigned short checksum = 0;
+  unsigned long long sum = 0;
+
+  unsigned int carry;
+
+  unsigned int i;
+
+  /* Summation step */
+  for(i = 0; i < packet_length; i = i+2){
+    sum += (packet[i]<<8) & 0xff00;
+    sum += (packet[i+1]) & 0xff;
+  }
+
+  /* Wrap-around: adding the carries */
+  while(sum>>16){
+    carry = (unsigned int)(sum>>16);
+    sum = (sum & 0xffff);
+    sum += carry;
+  }
+
+  /* One's comp */
+  sum = ~sum;
+
+  checksum = (unsigned short)(0xffff & sum);
+  checksum = (unsigned short )htons(checksum);
+  return checksum;
+}
 
 
+int guaranteed_write(int sockfd, char * packet, unsigned packet_length){
+  int write_length = 0;
+  int temp =0;
+
+  while( write_length != packet_length){
+    temp = write(sockfd, packet + write_length, packet_length-write_length);
+    if(temp<0){
+      perror("write not working");
+    }
+    if(temp == 0){
+      //EOF reached. this never happens for write.
+      return write_length;
+    }
+    write_length += temp;
+  }
+  return packet_length;
+}
 
 
+int guaranteed_read(int sockfd, char * packet, unsigned packet_length){
+  int read_length = 0;
+  int temp = 0;
 
+  while(read_length != packet_length){
+    temp = read(sockfd, packet + read_length, packet_length - read_length);
+    if(temp<0){
+      perror("read not working");
+    }
+    if(temp == 0){
+      //EOF. wtf
+      return read_length;
+    }
+    read_length += temp;
+  }
 
-
-
+  return read_length;
+}
 
 
 

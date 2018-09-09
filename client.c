@@ -3,16 +3,17 @@
 #include <unistd.h>
 #include <errno.h>
 #include <string.h>
-#include <netdb.h>
 #include <sys/types.h>
-#include <netinet/in.h>
 #include <sys/socket.h>
-#include <stdbool.h>
-
+#include <netinet/in.h>
+#include <netdb.h>
 #include <arpa/inet.h>
 
-#define HEADER_SIZE 8
 
+#include <stdbool.h>
+
+
+#define HEADER_SIZE 8
 
 /* Function declarations */
 unsigned adjust_to_even(unsigned packet_length);
@@ -20,7 +21,8 @@ unsigned short calculate_checksum(char * packet, unsigned packet_length);
 bool valid_checksum(char * packet, unsigned packet_length);
 void print_packet(char * packet, unsigned packet_length);
 void *get_in_addr(struct sockaddr *sa);
-
+int guaranteed_write(int sockfd, char * packet, unsigned packet_length);
+int guaranteed_read(int sockfd, char * packet, unsigned packet_length);
 
 //Client code- getaddrinfo, socket, connect.
 /* ex: ./client -h 143.248.56.16 -p 5003 -o 1 -s 5 */
@@ -91,8 +93,25 @@ int main(int argc, char * argv[]){
   int write_length;
   int read_length;
 
+  int temp;
+
+  /* Check shift and op. */
   op_byte = (unsigned char) atoi(operation);
-  shift_byte = (unsigned char) atoi(shift);
+  int temp_shift = atoi(shift);
+  if(temp_shift > 255){
+    temp_shift = temp_shift%26;
+  }
+  if(temp_shift < 0 ){ 
+    while(temp_shift<0){
+      temp_shift += 26;
+    }
+  }
+  shift_byte = (unsigned char) temp_shift;
+  if(op_byte != 0u && op_byte != 1u){
+    close(sockfd);
+    exit(1);
+  }
+
   
   /* While loop for input longer than 10Mb */
   while(1){  
@@ -100,6 +119,7 @@ int main(int argc, char * argv[]){
     if((original_length = read(0, packet+HEADER_SIZE, 10000000-HEADER_SIZE)) < 10000000-HEADER_SIZE){
       read_more = false;
     }
+
 
     /* Take care of errors */
     if( original_length == -1){
@@ -122,38 +142,35 @@ int main(int argc, char * argv[]){
     /* Pack data- checksum */
     memcpy(packet+2, &checksum, 2);
 
-    //print_packet(packet, packet_length);
-
     /* Write to server */
-    write_length = write(sockfd, packet, packet_length);
+    guaranteed_write(sockfd, packet, packet_length);
+
+    /* Free packet sending to server. */
+    free(packet);
 
     /* Receive from server */
-    packet_from_server = calloc(1, packet_length);  //+1 for null char.
-    read_length = 0;
-    int  temp1;
-    while(read_length != packet_length){
-      temp1 = read(sockfd, packet_from_server+read_length, packet_length);
-      if(temp1<0){
-        perror("read not working");
-      }
-      read_length+=temp1;
-    }
-
-    /* Validate checksum. If invalid, close connection and terminate. */
-    if(!valid_checksum(packet_from_server, packet_length)){
+    int read_length;
+    packet_from_server = calloc(1, packet_length); 
+    if(guaranteed_read(sockfd, packet_from_server, packet_length) < packet_length){
+      //If less than what we sent comes back, terminate. 
+      free(packet_from_server);
       close(sockfd);
       exit(1);
     }
 
-    //print_packet(packet_from_server, packet_length);
+    /* Validate checksum. If invalid, close connection and terminate. */
+    if(!valid_checksum(packet_from_server, packet_length)){
+      free(packet_from_server);
+      close(sockfd);
+      exit(1);
+    }
 
-    /* May need to change this later. */  
-    int temp2 = write(1, packet_from_server+8, packet_length-8);
+    /* Write payload to stdout */  
+    write(1, packet_from_server+8, packet_length-8);
     fflush(stdout);
 
-    /* Free */
+    /* Free packet from server. */
     free(packet_from_server);
-    free(packet);
 
     if(!read_more)
       break;
@@ -162,9 +179,6 @@ int main(int argc, char * argv[]){
   close(sockfd);
   return 0;
 }
-
-
-
 
 
 
@@ -235,6 +249,59 @@ void *get_in_addr(struct sockaddr *sa)
 
     return &(((struct sockaddr_in6*)sa)->sin6_addr);
 }
+
+int guaranteed_write(int sockfd, char * packet, unsigned packet_length){
+  int write_length = 0;
+  int temp =0;
+
+  while( write_length != packet_length){
+    temp = write(sockfd, packet + write_length, packet_length-write_length);
+    if(temp<0){
+      perror("write not working");
+    }
+    if(temp == 0){
+      //EOF reached. this never happens for write.
+      return write_length;
+    }
+    write_length += temp;
+  }
+  return packet_length;
+}
+
+
+
+int guaranteed_read(int sockfd, char * packet, unsigned packet_length){
+  int read_length = 0;
+  int temp = 0;
+
+  while(read_length != packet_length){
+    temp = read(sockfd, packet + read_length, packet_length - read_length);
+    if(temp<0){
+      perror("read not working");
+    }
+    if(temp == 0){
+      //EOF. wtf
+      return read_length;
+    }
+    read_length += temp;
+  }
+
+  return read_length;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
