@@ -9,29 +9,21 @@
 #include <sys/socket.h>
 #include <stdbool.h>
 
-
 #include <arpa/inet.h>
 
 #define HEADER_SIZE 8
 
 
 /* Function declarations */
-unsigned adjust_to_multiple_of_16(unsigned packet_length);
+unsigned adjust_to_even(unsigned packet_length);
 unsigned short calculate_checksum(char * packet, unsigned packet_length);
-
-
-void *get_in_addr(struct sockaddr *sa)
-{
-    if (sa->sa_family == AF_INET) {
-        return &(((struct sockaddr_in*)sa)->sin_addr);
-    }
-
-    return &(((struct sockaddr_in6*)sa)->sin6_addr);
-}
+bool valid_checksum(char * packet, unsigned packet_length);
+void print_packet(char * packet, unsigned packet_length);
+void *get_in_addr(struct sockaddr *sa);
 
 
 //Client code- getaddrinfo, socket, connect.
-/* ex: ./client -h 143.248.111.222 -p 1234 -o 0 -s 5 */
+/* ex: ./client -h 143.248.56.16 -p 5003 -o 1 -s 5 */
 int main(int argc, char * argv[]){
   char * host = argv[2];
 	char * port = argv[4];
@@ -75,7 +67,7 @@ int main(int argc, char * argv[]){
     return 1; //beej returns 2?
   }
 
-  //check server information
+  /* check server information */
   char s[INET6_ADDRSTRLEN];
   //  inet_ntop(p->ai_family, get_in_addr((struct sockaddr *)p->ai_addr), s, sizeof s);
   inet_ntop(p->ai_family, get_in_addr((struct sockaddr *)p->ai_addr), s, sizeof s);
@@ -101,13 +93,11 @@ int main(int argc, char * argv[]){
 
   op_byte = (unsigned char) atoi(operation);
   shift_byte = (unsigned char) atoi(shift);
-
-  //Read from stdin into data area of packet.
   
-  //while loop for input longer than 10MB.
+  /* While loop for input longer than 10Mb */
   while(1){  
     packet = calloc(1,10000000);  //10MB(10x10^6) including header.
-    if((original_length = read(0, packet+8, 10000000-HEADER_SIZE)) < 10000000-HEADER_SIZE){
+    if((original_length = read(0, packet+HEADER_SIZE, 10000000-HEADER_SIZE)) < 10000000-HEADER_SIZE){
       read_more = false;
     }
 
@@ -117,7 +107,7 @@ int main(int argc, char * argv[]){
     }
 
     /* Adjust Length to multiple of 16 */
-    packet_length = adjust_to_multiple_of_16(original_length + HEADER_SIZE);
+    packet_length = adjust_to_even(original_length + HEADER_SIZE);
     data_length = packet_length - HEADER_SIZE;
     length_network_order = htonl(packet_length);
 
@@ -132,14 +122,7 @@ int main(int argc, char * argv[]){
     /* Pack data- checksum */
     memcpy(packet+2, &checksum, 2);
 
-    /* Debugging - print packet */
-    // for(i =0; i<packet_length; i++){
-    //   if(i%4 == 0){
-    //     printf("\n");
-    //   }
-    //   printf("%02X ", *((char *)(packet+i)));
-    // }
-    // printf("\n");
+    //print_packet(packet, packet_length);
 
     /* Write to server */
     write_length = write(sockfd, packet, packet_length);
@@ -147,7 +130,7 @@ int main(int argc, char * argv[]){
     /* Receive from server */
     packet_from_server = calloc(1, packet_length);  //+1 for null char.
     read_length = 0;
-    int temp1;
+    int  temp1;
     while(read_length != packet_length){
       temp1 = read(sockfd, packet_from_server+read_length, packet_length);
       if(temp1<0){
@@ -156,44 +139,63 @@ int main(int argc, char * argv[]){
       read_length+=temp1;
     }
 
-
     /* Validate checksum. If invalid, close connection and terminate. */
+    if(!valid_checksum(packet_from_server, packet_length)){
+      close(sockfd);
+      exit(1);
+    }
 
-    /* Debugging - print received packet */
-    // for(i =0; i<packet_length; i++){
-    //   if(i%4 == 0){
-    //     printf("\n");
-    //   }
-    //   printf("%02X ", *((char *)(packet_from_server+i)));
-    // }
-    // printf("\n");
+    //print_packet(packet_from_server, packet_length);
 
     /* May need to change this later. */  
     int temp2 = write(1, packet_from_server+8, packet_length-8);
     fflush(stdout);
 
+    /* Free */
     free(packet_from_server);
-
-    // printf("\n");
-    // printf("total sent to server = %d\n", write_length);
-    // printf("total read from server = %d\n",read_length);
-    // printf("total write to stdout = %d\n",temp2);
-
-    /* Free and re calloc, to set to 0. */
     free(packet);
 
-    if(!read_more){
+    if(!read_more)
       break;
-    }
   }
+
+  close(sockfd);
+  return 0;
 }
 
-unsigned adjust_to_multiple_of_16(unsigned packet_length){
+
+
+
+
+
+/* For debugging */
+void print_packet(char * packet, unsigned packet_length){
+  int i;
+  for(i =0; i<packet_length; i++){
+    if(i%4 == 0){
+      printf("\n");
+    }
+    printf("%02X ", *((char *)(packet+i)));
+  }
+  printf("\n");
+}
+
+unsigned adjust_to_even(unsigned packet_length){
   unsigned adjusted_length = packet_length;
   while(adjusted_length%2 != 0){
     adjusted_length++;
   }
   return adjusted_length;
+}
+
+bool valid_checksum(char * packet, unsigned packet_length){
+  unsigned short checksum = ~calculate_checksum(packet, packet_length);
+  unsigned short validation = 0xffff;
+
+  if(checksum == validation){
+    return true;
+  }
+  return false;
 }
 
 unsigned short calculate_checksum(char * packet, unsigned packet_length){
@@ -213,7 +215,7 @@ unsigned short calculate_checksum(char * packet, unsigned packet_length){
   /* Wrap-around: adding the carries */
   while(sum>>16){
     carry = (unsigned int)(sum>>16);
-    sum = (sum & 0x0000000000ffff);
+    sum = (sum & 0xffff);
     sum += carry;
   }
 
@@ -221,11 +223,18 @@ unsigned short calculate_checksum(char * packet, unsigned packet_length){
   sum = ~sum;
 
   checksum = (unsigned short)(0xffff & sum);
-  checksum = htons(checksum);
+  checksum = (unsigned short )htons(checksum);
   return checksum;
 }
 
+void *get_in_addr(struct sockaddr *sa)
+{
+    if (sa->sa_family == AF_INET) {
+        return &(((struct sockaddr_in*)sa)->sin_addr);
+    }
 
+    return &(((struct sockaddr_in6*)sa)->sin6_addr);
+}
 
 
 

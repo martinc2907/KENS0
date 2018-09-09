@@ -1,7 +1,3 @@
-/*
-** server.c -- a stream socket server demo
-*/
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -15,34 +11,15 @@
 #include <sys/wait.h>
 #include <signal.h>
 
-#define PORT "5001"  // the port users will be connecting to
-
 #define BACKLOG 10     // how many pending connections queue will hold
 
 void cipher(int op, unsigned shift, unsigned length, char * data);
-void sigchld_handler(int s)
-{
-    // waitpid() might overwrite errno, so we save and restore it:
-    int saved_errno = errno;
+void sigchld_handler(int s);
+void *get_in_addr(struct sockaddr *sa);
 
-    while(waitpid(-1, NULL, WNOHANG) > 0);
+int main(int argc, char * argv[]){
 
-    errno = saved_errno;
-}
-
-
-// get sockaddr, IPv4 or IPv6:
-void *get_in_addr(struct sockaddr *sa)
-{
-    if (sa->sa_family == AF_INET) {
-        return &(((struct sockaddr_in*)sa)->sin_addr);
-    }
-
-    return &(((struct sockaddr_in6*)sa)->sin6_addr);
-}
-
-int main(void)
-{
+    char * port = argv[2];
 
     int sockfd;
     int newfd;
@@ -55,28 +32,26 @@ int main(void)
 
     struct sigaction sa;
 
-
+    /* Set up struct */
     memset(&hints, 0, sizeof hints);
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_flags = AI_PASSIVE; //use my ip.
 
-    //get info about itself. need to provide own address to bind function, which associates (ip,port) with fd.
-    int status = getaddrinfo(NULL, PORT, &hints, &server_info);
+    /* get info about itself. need to provide own address to bind function, which associates (ip,port) with fd. */
+    int status = getaddrinfo(NULL, port, &hints, &server_info);
     if(status != 0){
         fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(status));
         return 1;
     }
 
-    // loop through all the results and bind to the first we can
+    /* loop through all the results and bind to the first we can */
     for(p = server_info; p != NULL; p = p->ai_next) {
         if ((sockfd = socket(p->ai_family, p->ai_socktype,
                 p->ai_protocol)) == -1) {
             perror("server: socket");
             continue;
         }
-
-        //COME BACK
         //allows other sockets to bind to this port, unless there is active listening socket bound already.
         if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &yes,
                 sizeof(int)) == -1) {
@@ -103,7 +78,6 @@ int main(void)
         perror("listen");
         exit(1);
     }
-
 
     //COME BACK
     sa.sa_handler = sigchld_handler; // reap all dead processes
@@ -132,11 +106,11 @@ int main(void)
         if(!fork()){    //inside is child process.
             close(sockfd);  //doesn't need listener fd.
 
-            //do stuff
-            int op;
-            unsigned shift;
-            unsigned length;
-            int checksum;
+            /* Read header from client first. */
+            //header is 8 bytes.
+            
+
+
 
             //
             read(newfd, &op, 1);
@@ -180,10 +154,25 @@ void cipher(int op, unsigned shift, unsigned length, char * data){
 
 
 
+void sigchld_handler(int s)
+{
+    // waitpid() might overwrite errno, so we save and restore it:
+    int saved_errno = errno;
+
+    while(waitpid(-1, NULL, WNOHANG) > 0);
+
+    errno = saved_errno;
+}
 
 
+void *get_in_addr(struct sockaddr *sa)
+{
+    if (sa->sa_family == AF_INET) {
+        return &(((struct sockaddr_in*)sa)->sin_addr);
+    }
 
-
+    return &(((struct sockaddr_in6*)sa)->sin6_addr);
+}
 
 
 
