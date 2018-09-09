@@ -132,7 +132,6 @@ int main(int argc, char * argv[]){
     /* Pack data- checksum */
     memcpy(packet+2, &checksum, 2);
 
-
     /* Debugging - print packet */
     // for(i =0; i<packet_length; i++){
     //   if(i%4 == 0){
@@ -149,7 +148,7 @@ int main(int argc, char * argv[]){
     packet_from_server = calloc(1, packet_length);  //+1 for null char.
     read_length = 0;
     int temp1;
-    while(read_length!=packet_length){
+    while(read_length != packet_length){
       temp1 = read(sockfd, packet_from_server+read_length, packet_length);
       if(temp1<0){
         perror("read not working");
@@ -157,6 +156,8 @@ int main(int argc, char * argv[]){
       read_length+=temp1;
     }
 
+
+    /* Validate checksum. If invalid, close connection and terminate. */
 
     /* Debugging - print received packet */
     // for(i =0; i<packet_length; i++){
@@ -173,6 +174,11 @@ int main(int argc, char * argv[]){
 
     free(packet_from_server);
 
+    // printf("\n");
+    // printf("total sent to server = %d\n", write_length);
+    // printf("total read from server = %d\n",read_length);
+    // printf("total write to stdout = %d\n",temp2);
+
     /* Free and re calloc, to set to 0. */
     free(packet);
 
@@ -184,7 +190,7 @@ int main(int argc, char * argv[]){
 
 unsigned adjust_to_multiple_of_16(unsigned packet_length){
   unsigned adjusted_length = packet_length;
-  while(adjusted_length%16 != 0){
+  while(adjusted_length%2 != 0){
     adjusted_length++;
   }
   return adjusted_length;
