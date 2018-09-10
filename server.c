@@ -13,9 +13,6 @@
 #include <stdbool.h>
 #include <ctype.h>
 
-
-
-
 #define BACKLOG 10     // how many pending connections queue will hold
 
 void cipher(unsigned char op, unsigned char shift, unsigned length, char * data);
@@ -28,7 +25,6 @@ int guaranteed_write(int sockfd, char * packet, unsigned packet_length);
 int guaranteed_read(int sockfd, char * packet, unsigned packet_length);
 
 int main(int argc, char * argv[]){
-
     char * port = argv[2];
 
     int sockfd;
@@ -98,24 +94,25 @@ int main(int argc, char * argv[]){
         exit(1);
     }
 
-    printf("server: waiting for connections...\n");
+    // printf("server: waiting for connections...\n");
 
     while(1){
         clientlen = sizeof(struct sockaddr_storage);
         newfd = accept(sockfd, (struct sockaddr *)&client_addr, &clientlen);   
         if(newfd == -1){
             perror("accept");
-            continue;
+            // continue;
         }
 
         inet_ntop(client_addr.ss_family,
             get_in_addr((struct sockaddr *)&client_addr),
             s, sizeof s);
-        printf("server: got connection from %s\n", s);
+        // printf("server: got connection from %s\n", s);
         
 
         if(!fork()){    //inside is child process.
             close(sockfd);  //doesn't need listener fd.
+
 
             int length;
             bool read_more = true;
@@ -147,6 +144,8 @@ int main(int argc, char * argv[]){
                 if(length + 8 < 10000000){
                     read_more = false;
                 }
+
+
 
                 /* Validate checksum */
                 if(!valid_checksum(packet, packet_length)){
