@@ -126,8 +126,7 @@ int main(int argc, char * argv[]){
 
                 /* Read header first */
                 int header_read = guaranteed_read(newfd, header, 8);
-                if(header_read != 8){
-                    //broken header
+                if(header_read == -1){
                     close(newfd);
                     exit(1);
                 }
@@ -140,8 +139,7 @@ int main(int argc, char * argv[]){
                 /* Read entire packet now. */
                 packet = calloc(1, packet_length);
                 memcpy(packet, header, 8);
-                if((length = guaranteed_read(newfd, packet+8, packet_length-8))<packet_length-8){
-                    //If payload broken.
+                if((length = guaranteed_read(newfd, packet+8, packet_length-8)) == -1){
                     free(packet);
                     close(newfd);
                     exit(1);
@@ -195,7 +193,12 @@ void cipher(unsigned char op, unsigned char shift, unsigned length, char * data)
     unsigned char c;
 
     if(op == 1){
-        shift = shift * -1; //decrypt
+        //decrypt
+        int temp = shift * -1;
+        while(temp < 0){
+            temp += 26;
+        }
+        shift = (unsigned) temp;
     }
 
 
@@ -285,7 +288,8 @@ int guaranteed_write(int sockfd, char * packet, unsigned packet_length){
   while( write_length != packet_length){
     temp = write(sockfd, packet + write_length, packet_length-write_length);
     if(temp<0){
-      perror("write not working");
+      // perror("write not working");
+        return -1;
     }
     if(temp == 0){
       //EOF reached. this never happens for write.
@@ -304,7 +308,8 @@ int guaranteed_read(int sockfd, char * packet, unsigned packet_length){
   while(read_length != packet_length){
     temp = read(sockfd, packet + read_length, packet_length - read_length);
     if(temp<0){
-      perror("read not working");
+      // perror("read not working");
+        return -1;
     }
     if(temp == 0){
       //EOF. wtf

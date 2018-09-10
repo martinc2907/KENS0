@@ -88,6 +88,7 @@ int main(int argc, char * argv[]){
   unsigned length_network_order;  //network order
   unsigned short checksum; //this needs to be 2 bytes later.
 
+  char header[8];
   bool read_more = true;
 
   int write_length;
@@ -149,10 +150,16 @@ int main(int argc, char * argv[]){
     free(packet);
 
     /* Receive from server */
-    int read_length;
-    packet_from_server = calloc(1, packet_length); 
-    if(guaranteed_read(sockfd, packet_from_server, packet_length) < packet_length){
-      //If less than what we sent comes back, terminate. 
+    int header_read = guaranteed_read(sockfd, header, 8);
+    if(header_read == -1){
+      close(sockfd);
+      exit(1);
+    }
+    memcpy(&packet_length, header+4,4);
+    packet_length = ntohl(packet_length);
+    packet_from_server = calloc(1,packet_length);
+    memcpy(packet_from_server, header, 8);
+    if(guaranteed_read(sockfd, packet_from_server + 8, packet_length-8)== -1){
       free(packet_from_server);
       close(sockfd);
       exit(1);
@@ -257,7 +264,8 @@ int guaranteed_write(int sockfd, char * packet, unsigned packet_length){
   while( write_length != packet_length){
     temp = write(sockfd, packet + write_length, packet_length-write_length);
     if(temp<0){
-      perror("write not working");
+      // perror("write not working");
+      return -1;
     }
     if(temp == 0){
       //EOF reached. this never happens for write.
@@ -277,7 +285,8 @@ int guaranteed_read(int sockfd, char * packet, unsigned packet_length){
   while(read_length != packet_length){
     temp = read(sockfd, packet + read_length, packet_length - read_length);
     if(temp<0){
-      perror("read not working");
+      // perror("read not working");
+      return -1;
     }
     if(temp == 0){
       //EOF. wtf
